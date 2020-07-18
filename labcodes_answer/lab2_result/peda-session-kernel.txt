@@ -1,0 +1,5 @@
+break kern_init
+break *0xc010002a
+break *0x7c00
+break *0x7c59
+

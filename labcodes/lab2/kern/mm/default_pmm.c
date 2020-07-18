@@ -66,77 +66,108 @@ default_init(void) {
 }
 
 static void
-default_init_memmap(struct Page *base, size_t n) {
+default_init_memmap(struct Page *base, size_t n) {  // this function is to init "a" free block at base contains n pages
     assert(n > 0);
     struct Page *p = base;
     for (; p != base + n; p ++) {
-        assert(PageReserved(p));
-        p->flags = p->property = 0;
-        set_page_ref(p, 0);
+        assert(PageReserved(p));        //assert PG_reserved is set means that this page is reserved by kernel;
+        p->flags  = 0;     // clean the flags(PG_reversed) and set property to 0.
+        SetPageProperty(p);             // mark it vaild;
+        p->property = 0;
+        set_page_ref(p, 0);             // freed and no ref;p
+        list_add_before(&free_list, &(p->page_link));  // add to the tail of list ;
     }
-    base->property = n;
-    SetPageProperty(base);
-    nr_free += n;
-    list_add(&free_list, &(base->page_link));
+    base->property = n;                 // first page's property set to n;
+    nr_free += n;                       // the free pages num;
 }
 
 static struct Page *
 default_alloc_pages(size_t n) {
     assert(n > 0);
-    if (n > nr_free) {
+    if (n > nr_free) {                  //没有n个free page,那么直接return
         return NULL;
     }
-    struct Page *page = NULL;
-    list_entry_t *le = &free_list;
-    while ((le = list_next(le)) != &free_list) {
-        struct Page *p = le2page(le, page_link);
-        if (p->property >= n) {
-            page = p;
-            break;
+    struct Page *page = NULL, *cpage = NULL;
+    list_entry_t *le = &free_list, *t_le = NULL;                  // 注意free_list的第一个块，是不使用的。
+    while ((le = list_next(le)) != &free_list) {    // 遍历
+        cpage = le2page(le,page_link);
+        if(cpage->property>=n){                     // 找到了一个连续的n页的block
+            page = cpage;
+            size_t npage = cpage->property;
+            size_t i = 0;
+            for(;i<n;i++){                          // 切出来npage，把这些页设置为内核保存，清掉property位。
+                ClearPageProperty(page);
+                SetPageReserved(cpage);
+                t_le = le;
+                le = list_next(le);
+                list_del(t_le);                       // 从链表中删掉
+                cpage = le2page(le,page_link);
+            }
+            if(npage > n){                          // 有剩余的话，作为新的页头，设置property位。
+                cpage->flags = 0;
+                SetPageProperty(cpage);
+                //assert(npage-n>0);
+                //assert(!PageReserved(cpage));
+                cpage->property = npage - n;
+            }
+            nr_free -= n;
+            return page;
         }
     }
-    if (page != NULL) {
-        list_del(&(page->page_link));
-        if (page->property > n) {
-            struct Page *p = page + n;
-            p->property = page->property - n;
-            list_add(&free_list, &(p->page_link));
-    }
-        nr_free -= n;
-        ClearPageProperty(page);
-    }
-    return page;
+    return NULL;
 }
 
 static void
 default_free_pages(struct Page *base, size_t n) {
     assert(n > 0);
     struct Page *p = base;
-    for (; p != base + n; p ++) {
-        assert(!PageReserved(p) && !PageProperty(p));
-        p->flags = 0;
-        set_page_ref(p, 0);
+    list_entry_t *le = &free_list;
+    struct Page* curp = NULL;
+    while ((le = list_next(le)) != &free_list){
+        curp = le2page(le,page_link);
+        if(base < curp){ break ;}
     }
-    base->property = n;
+    list_entry_t *insert_before_le = le;
+    for (p = base; p != base + n; p ++) {
+        //p->flags = 0;
+        //SetPageProperty(p);
+        //set_page_ref(p, 0);
+        list_add_before(insert_before_le,&(p->page_link));      // 逐个插入位置之前;
+    }              
+    base->flags = 0;
+    set_page_ref(base,0);
+    ClearPageProperty(base);                            // 为啥要先清除又设置上？
     SetPageProperty(base);
-    list_entry_t *le = list_next(&free_list);
-    while (le != &free_list) {
-        p = le2page(le, page_link);
-        le = list_next(le);
-        if (base + base->property == p) {
-            base->property += p->property;
-            ClearPageProperty(p);
-            list_del(&(p->page_link));
-        }
-        else if (p + p->property == base) {
-            p->property += base->property;
-            ClearPageProperty(base);
-            base = p;
-            list_del(&(p->page_link));
-        }
+    base->property = n;                                 // 设置页头
+
+    //-----------------------------------检查合并-----------------------------------------//
+    // now p point to the next block's first page, insert_before_le is the next block's page_head;
+    // so we compare if p + 1 == le2page(insert_before_le), if so, then try to merge them;
+
+    if(p == le2page(insert_before_le,page_link)){
+        struct Page* next_page_head = le2page(insert_before_le,page_link);
+        base->property += next_page_head->property;
+        next_page_head->property = 0;
+        // ClearPageProperty(next_page_head);
+    }
+
+    // now we check if the prev page on the list is next to base;
+    // so we compare if base - 1 == le2page(list_prev(base->page_link))
+    list_entry_t * prev_le = list_prev(&(base->page_link));
+    struct Page * prev_page = le2page(prev_le,page_link);
+    if((base - 1) == prev_page && prev_le!=&free_list){     // remember to check border
+       while(prev_le!=&free_list){
+            if(prev_page->property){
+                prev_page->property += base->property;
+                base->property = 0;
+                break;
+            }
+            prev_le = list_prev(prev_le);
+            prev_page = le2page(prev_le, page_link);
+       }
     }
     nr_free += n;
-    list_add(&free_list, &(base->page_link));
+    return;
 }
 
 static size_t
