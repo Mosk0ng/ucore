@@ -62,6 +62,8 @@ void print_pgdir(void);
  * KADDR - takes a physical address and returns the corresponding kernel virtual
  * address. It panics if you pass an invalid physical address.
  * */
+
+// pa  + KERNBASE(0xc0100000) = kva ;
 #define KADDR(pa) ({                                                    \
             uintptr_t __m_pa = (pa);                                    \
             size_t __m_ppn = PPN(__m_pa);                               \

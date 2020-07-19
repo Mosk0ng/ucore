@@ -188,17 +188,17 @@ nr_free_pages(void) {
 /* pmm_init - initialize the physical memory management */
 static void
 page_init(void) {
-    struct e820map *memmap = (struct e820map *)(0x8000 + KERNBASE);
+    struct e820map *memmap = (struct e820map *)(0x8000 + KERNBASE);             // 在bootasm.S 中，这个位置读入了存储探测的结果；
     uint64_t maxpa = 0;
 
     cprintf("e820map:\n");
     int i;
-    for (i = 0; i < memmap->nr_map; i ++) {
+    for (i = 0; i < memmap->nr_map; i ++) {                                     // 对于每一个内存块；
         uint64_t begin = memmap->map[i].addr, end = begin + memmap->map[i].size;
         cprintf("  memory: %08llx, [%08llx, %08llx], type = %d.\n",
                 memmap->map[i].size, begin, end - 1, memmap->map[i].type);
-        if (memmap->map[i].type == E820_ARM) {
-            if (maxpa < end && begin < KMEMSIZE) {
+        if (memmap->map[i].type == E820_ARM) {                                  // 如果type是 E820_ARM,代表这个块是空闲的；
+            if (maxpa < end && begin < KMEMSIZE) {                              // 找到这些空闲块中物理地址最高的；
                 maxpa = end;
             }
         }
@@ -209,19 +209,19 @@ page_init(void) {
 
     extern char end[];
 
-    npage = maxpa / PGSIZE;
-    pages = (struct Page *)ROUNDUP((void *)end, PGSIZE);
+    npage = maxpa / PGSIZE;                                                     // 物理内存共有npage页，每页大小是4K
+    pages = (struct Page *)ROUNDUP((void *)end, PGSIZE);                        // 在end之后的一个页建立虚拟地址的物理页项数组
 
-    for (i = 0; i < npage; i ++) {
+    for (i = 0; i < npage; i ++) {                                              // 全部设置为内核保留的；
         SetPageReserved(pages + i);
     }
 
     uintptr_t freemem = PADDR((uintptr_t)pages + sizeof(struct Page) * npage);
 
-    for (i = 0; i < memmap->nr_map; i ++) {
+    for (i = 0; i < memmap->nr_map; i ++) {                                     // 在begin和end之间初始化memmap
         uint64_t begin = memmap->map[i].addr, end = begin + memmap->map[i].size;
         if (memmap->map[i].type == E820_ARM) {
-            if (begin < freemem) {
+            if (begin < freemem) {                                              // 实际上空闲的块
                 begin = freemem;
             }
             if (end > KMEMSIZE) {
@@ -231,7 +231,7 @@ page_init(void) {
                 begin = ROUNDUP(begin, PGSIZE);
                 end = ROUNDDOWN(end, PGSIZE);
                 if (begin < end) {
-                    init_memmap(pa2page(begin), (end - begin) / PGSIZE);
+                    init_memmap(pa2page(begin), (end - begin) / PGSIZE);        // 调用 memmap， 把这些页上链 （free_list）
                 }
             }
         }
@@ -368,17 +368,23 @@ get_pte(pde_t *pgdir, uintptr_t la, bool create) {
      *   PTE_W           0x002                   // page table/directory entry flags bit : Writeable
      *   PTE_U           0x004                   // page table/directory entry flags bit : User can access
      */
-#if 0
-    pde_t *pdep = NULL;   // (1) find page directory entry
-    if (0) {              // (2) check if entry is not present
-                          // (3) check if creating is needed, then alloc page for page table
-                          // CAUTION: this page is used for page table, not for common data page
-                          // (4) set page reference
-        uintptr_t pa = 0; // (5) get linear address of page
-                          // (6) clear page content using memset
-                          // (7) set page directory entry's permission
+#if 1
+    pde_t *pdep = PDX(la) + pgdir;              // (1) find page directory entry; pdep means page dir entry pointer
+    if (!(*pdep&PTE_P)) {                        // (2) check if entry is not present
+        if(create){                             // (3) check if creating is needed, then alloc page for page table
+            struct Page * pt = NULL;
+            if((pt = alloc_page())==NULL)  // 创建的是二级页表；
+            { return NULL;}
+            set_page_ref(pt,1);                                             // (4) set page reference     
+                                                                            // (5) get linear address of page                              
+            uintptr_t pa = page2pa(pt);         // pa 是一个物理地址
+            memset(KADDR(pa),0,PGSIZE);                                     // (6) clear page content using memset
+            *pdep = pa | PTE_P | PTE_W | PTE_U;                             // (7) set page directory entry's permission
+            return (pte_t*)KADDR(PDE_ADDR(*pdep))+PTX(la);                  // (8) return page table entry
+        }
+        return NULL;
     }
-    return NULL;          // (8) return page table entry
+    return (pte_t*)KADDR(PDE_ADDR(*pdep))+PTX(la);                            
 #endif
 }
 
@@ -415,15 +421,23 @@ page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep) {
      *                        edited are the ones currently in use by the processor.
      * DEFINEs:
      *   PTE_P           0x001                   // page table/directory entry flags bit : Present
+     * 
      */
-#if 0
-    if (0) {                      //(1) check if this page table entry is present
-        struct Page *page = NULL; //(2) find corresponding page to pte
-                                  //(3) decrease page reference
-                                  //(4) and free this page when page reference reachs 0
-                                  //(5) clear second page table entry
-                                  //(6) flush tlb
+    //(1) check if this page table entry is present
+    //(2) find corresponding page to pte
+    //(3) decrease page reference
+    //(4) and free this page when page reference reachs 0
+    //(5) clear second page table entry
+    //(6) flush tlb
+#if 1
+    if ((*ptep&PTE_P)) {           
+        struct Page* page = pte2page(*ptep); 
+        int ref = page_ref_dec(page);
+        if(!ref) {free_page(page);} 
+        *ptep = 0;
+        tlb_invalidate(pgdir,la); 
     }
+    return;
 #endif
 }
 
@@ -460,8 +474,8 @@ page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm) {
             page_remove_pte(pgdir, la, ptep);
         }
     }
-    *ptep = page2pa(page) | PTE_P | perm;
-    tlb_invalidate(pgdir, la);
+    *ptep = page2pa(page) | PTE_P | perm;                       // 二级页表中记录page的物理地址
+    tlb_invalidate(pgdir, la);                                  // 失效TLB
     return 0;
 }
 

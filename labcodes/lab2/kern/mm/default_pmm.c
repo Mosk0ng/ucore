@@ -129,14 +129,14 @@ default_free_pages(struct Page *base, size_t n) {
     }
     list_entry_t *insert_before_le = le;
     for (p = base; p != base + n; p ++) {
-        //p->flags = 0;
-        //SetPageProperty(p);
-        //set_page_ref(p, 0);
+        p->flags = 0;
+        SetPageProperty(p);
+        set_page_ref(p, 0);
         list_add_before(insert_before_le,&(p->page_link));      // 逐个插入位置之前;
     }              
     base->flags = 0;
     set_page_ref(base,0);
-    ClearPageProperty(base);                            // 为啥要先清除又设置上？
+    ClearPageProperty(base);                            // 为啥要先清除又设置上？为什么只设置页头？
     SetPageProperty(base);
     base->property = n;                                 // 设置页头
 
